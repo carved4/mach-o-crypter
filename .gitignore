@@ -1,0 +1,12 @@
+# IDE settings
+.vscode/
+.idea/
+
+# Build outputs
+*.exe
+*.bin
+key.txt
+
+# OS files
+.DS_Store
+Thumbs.db 
