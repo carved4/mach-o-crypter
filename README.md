@@ -50,19 +50,52 @@ This project contains two components:
 
 ## Security Improvements
 
-The project uses several security best practices:
+The project implements multiple layers of security enhancements:
+
+### Core Security Features
 
 1. **Authenticated Encryption**: ChaCha20-Poly1305 provides both confidentiality and integrity/authenticity
 2. **Secure Key Derivation**: Instead of storing encryption keys directly, we use Argon2id to derive keys
 3. **Memory-Hard Key Derivation**: Makes brute force attacks significantly more expensive
-4. **Secure Memory Management**:
-   - Random data overwriting to prevent data remanence attacks
-   - Zero overwriting to ensure data is not visible in memory dumps
-   - Explicit garbage collection to encourage memory release
-5. **Temporary File Security**:
+
+### Advanced Memory Protection
+
+1. **Memory Locking (mlock)**:
+   - Prevents sensitive decrypted data from being swapped to disk
+   - Reduces the risk of sensitive data being recovered from swap files
+
+2. **Constant-Time Memory Wiping**:
+   - Uses `crypto/subtle.ConstantTimeCopy` for secure memory wiping
+   - Prevents compiler optimization from removing memory clearing operations
+   - Employs `runtime.KeepAlive` to ensure memory wipes aren't optimized away
+
+3. **Architecture-Aware Execution**:
+   - Runtime detection of CPU architecture (ARM64 vs x86_64)
+   - Uses `sysctlbyname("hw.optional.arm64")` for architecture detection
+   - Ensures compatibility with Apple Silicon and Intel processors
+
+### Filesystem Security
+
+1. **Improved Temporary File Location**:
+   - Uses `/private/var/folders/<uid>/T/` (user-specific temp directories) when available
+   - Falls back to `/tmp` only if user-specific directories are inaccessible
+   - Reduces visibility in common forensic scans
+
+2. **Anti-Forensic File Handling**:
+   - Implements file hole punching with `F_PUNCHHOLE` to complicate forensic recovery
+   - Overwrites file content with zeros before deletion
+   - Makes carving deleted files from disk significantly more difficult
+
+3. **Secure Execution Flow**:
    - Random filenames with hidden attribute (dot prefix)
    - Immediate unlinking after execution
    - Proper permissions (0700)
+
+### Build Improvements
+
+1. **Platform-Specific Compilation**:
+   - Uses `//go:build darwin` tags to ensure code only builds on macOS
+   - Prevents accidental builds on unsupported platforms
 
 ## Security Considerations
 
