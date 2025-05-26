@@ -41,7 +41,7 @@ type PayloadData struct {
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Printf("Run with %s <inputfile.exe>\n", os.Args[0])
+		fmt.Printf("Run with %s <inputfile>\n", os.Args[0])
 		os.Exit(1)
 	}
 
