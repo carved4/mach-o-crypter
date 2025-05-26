@@ -1,6 +1,6 @@
 # Macho-Crypter - A Mach-O Binary Crypter for macOS
 
-A Go-based implementation of a crypter for Mach-O binaries on macOS with ChaCha20-Poly1305 authenticated encryption, CBOR payload packaging, and secure in-memory execution with anti-forensic features.
+A Go-based implementation of a crypter for Mach-O binaries on macOS with ChaCha20-Poly1305 authenticated encryption, zlib compression, CBOR payload packaging, and secure in-memory execution with anti-forensic features.
 
 Feel free to open issues or DM with feedback or use cases!
 
@@ -9,12 +9,13 @@ This project contains two components:
 
 1. **crypt** - A tool to encrypt a Mach-O executable file using ChaCha20-Poly1305 authenticated encryption, and package it into a single CBOR payload:
     - Combines encrypted binary, key derivation parameters, and cryptographic material into a single file
+    - Uses zlib compression to reduce payload size when beneficial
     - Uses CBOR (Concise Binary Object Representation) for compact, non-textual storage
     - Embeds Argon2 parameters for future-proofing and versioning
 
 2. **stub** - A Go binary that embeds, decrypts, and executes the encrypted Mach-O binary using a secure execution flow:
     - Detects CPU architecture at runtime (ARM64/x86_64)
-    - Decrypts the binary in memory with memory protection (mlock, MADV_NOCORE)
+    - Decrypts and decompresses (if compressed) the binary in memory with memory protection (mlock, MADV_NOCORE)
     - Drops the decrypted binary to a secure location in user cache directories
     - Executes it using syscall.Exec with proper environment variables
     - Implements anti-forensic techniques for file deletion
@@ -37,22 +38,26 @@ This project contains two components:
 ## Features
 
 - **Encryption/Decryption**: ChaCha20-Poly1305 AEAD (Authenticated Encryption with Associated Data)
+- **Compression**: zlib compression to reduce payload size when beneficial
 - **Secure Key Derivation**: Argon2id, a memory-hard KDF resistant to brute-force attacks
 - **Protection Against Bit-Flip Attacks**: Authentication prevents tampering with encrypted data
 - **Architecture Detection**: Runtime detection of ARM64 vs x86_64 for universal binary support
 - **CBOR Payload Format**: Single-file packaging of all cryptographic material and encrypted binary
 - **Secure Execution Flow**:
   - Decryption in memory with mlock protection
-  - Temporary file in user cache directories that blend with system caches
+  - Temporary file in user cache directories (`~/Library/Caches` or `/private/var/folders/*/C/`) with randomized bundle ID
   - Proper file permissions with chmod
   - Execution with environment variables preserved
-  - Anti-forensic file deletion with hole punching
+  - Anti-forensic file deletion with hole punching and zero-overwrite
 - **Memory Security**:
   - Memory locking to prevent swap exposure
   - Constant-time memory wiping with runtime.KeepAlive protection
   - MADV_NOCORE to prevent memory dumps
+  - MADV_FREE to reclaim memory pages immediately after use
 - **Stealthy Operation**:
   - No logging to system.log
+  - Obfuscated path logging to prevent revealing actual file locations
+  - Randomized bundle ID prefix per build to avoid static signatures
   - Blends with legitimate application caches
   - Minimal filesystem footprint
 - **Embedded Resources**: The encrypted payload is embedded in the stub binary using Go's embed package
@@ -115,10 +120,13 @@ This implementation includes numerous security enhancements but should still be 
 Additional security features implemented:
 - Memory locking (mlock) to prevent sensitive data from being swapped to disk
 - Constant-time memory wiping to prevent optimization from removing security operations
-- Anti-forensic file deletion with zero-overwrite and hole punching
-- Stealthy logging to avoid system.log entries
+- MADV_FREE to immediately reclaim memory pages after use
+- Anti-forensic file deletion with zero-overwrite and F_PUNCHHOLE before unlink
+- Stealthy logging with path obfuscation to avoid revealing file locations
 - Architecture detection for universal binary support
-- User cache directory usage to blend with legitimate applications
+- User cache directory usage with randomized bundle IDs to blend with legitimate applications
+- Proper file descriptor management with defer-close to prevent leaks
+- Adaptive compression that only applies when it reduces payload size
 
 Potential future improvements:
 - Anti-debugging mechanisms
@@ -132,8 +140,10 @@ This implementation is specifically designed for macOS and Mach-O binaries. It u
 ## Example Usage
 
 1. Create a simple Mach-O binary to test with
-2. Encrypt it using the crypt tool
-3. Build and run the stub
+2. Encrypt it using the crypt tool: `go run main.go your_binary`
+   - The tool will automatically compress the binary if it reduces size
+   - You'll see output indicating if compression was beneficial and the compression ratio
+3. Build and run the stub: `go build -v && ./stub`
 4. The binary will be executed securely with all environment variables preserved
 
 ## License

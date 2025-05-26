@@ -3,10 +3,28 @@
 .idea/
 
 # Build outputs
+stub/stub
+crypt/crypt
+payload.cbor
 *.exe
 *.bin
-key.txt
+*.o
+
+# Test binaries and data files
+test_binary
+*_test
+
+# Temporary files that might be created during development
+tmp/
+*.tmp
 
 # OS files
 .DS_Store
-Thumbs.db 
+Thumbs.db
+.directory
+
+# Go specific
+*.test
+*.out
+/vendor/
+/Godeps/
