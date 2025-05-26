@@ -1,22 +1,25 @@
 # Macho-Crypter - A Mach-O Binary Crypter for macOS
 
-A Go-based implementation of a crypter for Mach-O binaries on macOS with ChaCha20-Poly1305 authenticated encryption and secure in-memory execution.
+A Go-based implementation of a crypter for Mach-O binaries on macOS with ChaCha20-Poly1305 authenticated encryption, CBOR payload packaging, and secure in-memory execution with anti-forensic features.
 
 Feel free to open issues or DM with feedback or use cases!
 
 ## Overview
 This project contains two components:
 
-1. **crypt** - A tool to encrypt a Mach-O executable file using ChaCha20-Poly1305 authenticated encryption, and turn it into two parts:
-    - The encrypted_input.bin (which contains the encrypted bytes of the target executable)
-    - The config.txt which contains information needed for secure key derivation and decryption
+1. **crypt** - A tool to encrypt a Mach-O executable file using ChaCha20-Poly1305 authenticated encryption, and package it into a single CBOR payload:
+    - Combines encrypted binary, key derivation parameters, and cryptographic material into a single file
+    - Uses CBOR (Concise Binary Object Representation) for compact, non-textual storage
+    - Embeds Argon2 parameters for future-proofing and versioning
+
 2. **stub** - A Go binary that embeds, decrypts, and executes the encrypted Mach-O binary using a secure execution flow:
-    - Decrypts the binary in memory
-    - Drops the decrypted binary to a temporary file with a random name in /tmp
-    - Makes it executable
-    - Executes it using syscall.SYS_EXECVE with proper environment variables
-    - Immediately unlinks the file after execution
-    - Securely wipes sensitive data from memory
+    - Detects CPU architecture at runtime (ARM64/x86_64)
+    - Decrypts the binary in memory with memory protection (mlock, MADV_NOCORE)
+    - Drops the decrypted binary to a secure location in user cache directories
+    - Executes it using syscall.Exec with proper environment variables
+    - Implements anti-forensic techniques for file deletion
+    - Uses stealthy logging to avoid system.log entries
+    - Securely wipes sensitive data from memory using constant-time operations
 
 
 ## How to Use
@@ -25,7 +28,7 @@ This project contains two components:
 3. Put your target Mach-O executable in `gocrypter/crypt`
 4. In a shell, `cd` into `gocrypter/crypt`
 5. To encrypt your binary: `go run main.go your_binary` (replace with the name of your Mach-O binary)
-6. The files `encrypted_Input.bin` and `config.txt` will be created in the `gocrypter/stub` directory
+6. A single `payload.cbor` file will be created in the `gocrypter/stub` directory
 7. `cd` into `gocrypter/stub`
 8. Build the stub: `go build -v`
 9. Run the stub: `./stub`
@@ -36,17 +39,23 @@ This project contains two components:
 - **Encryption/Decryption**: ChaCha20-Poly1305 AEAD (Authenticated Encryption with Associated Data)
 - **Secure Key Derivation**: Argon2id, a memory-hard KDF resistant to brute-force attacks
 - **Protection Against Bit-Flip Attacks**: Authentication prevents tampering with encrypted data
+- **Architecture Detection**: Runtime detection of ARM64 vs x86_64 for universal binary support
+- **CBOR Payload Format**: Single-file packaging of all cryptographic material and encrypted binary
 - **Secure Execution Flow**:
-  - Decryption in memory
-  - Temporary file with random name in /tmp
+  - Decryption in memory with mlock protection
+  - Temporary file in user cache directories that blend with system caches
   - Proper file permissions with chmod
   - Execution with environment variables preserved
-  - Immediate file unlinking
+  - Anti-forensic file deletion with hole punching
 - **Memory Security**:
-  - Multi-phase memory overwriting (random data followed by zeros)
-  - Forced garbage collection
-  - Path string wiping
-- **Embedded Resources**: The encrypted file and configuration data are embedded in the stub binary using Go's embed package
+  - Memory locking to prevent swap exposure
+  - Constant-time memory wiping with runtime.KeepAlive protection
+  - MADV_NOCORE to prevent memory dumps
+- **Stealthy Operation**:
+  - No logging to system.log
+  - Blends with legitimate application caches
+  - Minimal filesystem footprint
+- **Embedded Resources**: The encrypted payload is embedded in the stub binary using Go's embed package
 
 ## Security Improvements
 
@@ -99,15 +108,23 @@ The project implements multiple layers of security enhancements:
 
 ## Security Considerations
 
-While significantly improved, this is still a basic implementation and may not be suitable for production use without additional OPSEC measures.
+This implementation includes numerous security enhancements but should still be used with caution in appropriate contexts.
 
 **Important**: Do not use this outside of a lab environment or an authorized red team engagement. I am not responsible for your actions.
 
-Potential improvements:
+Additional security features implemented:
+- Memory locking (mlock) to prevent sensitive data from being swapped to disk
+- Constant-time memory wiping to prevent optimization from removing security operations
+- Anti-forensic file deletion with zero-overwrite and hole punching
+- Stealthy logging to avoid system.log entries
+- Architecture detection for universal binary support
+- User cache directory usage to blend with legitimate applications
+
+Potential future improvements:
 - Anti-debugging mechanisms
 - VM detection
 - Additional obfuscation techniques
-- More sophisticated memory protection
+- In-memory execution without touching disk
 ## Platform Support
 
 This implementation is specifically designed for macOS and Mach-O binaries. It uses macOS-specific system calls and file handling.

@@ -2,26 +2,39 @@ package main
 
 import (
 	"crypto/rand"
-	"encoding/hex"
 	"fmt"
 	"io"
 	"log"
 	"os"
 	"path/filepath"
 
+	"github.com/fxamacker/cbor/v2"
 	"golang.org/x/crypto/argon2"
 	"golang.org/x/crypto/chacha20poly1305"
 )
 
 // Default Argon2 parameters
 const (
-	argonTime    = 1
-	argonMemory  = 64 * 1024
-	argonThreads = 4
-	argonKeyLen  = chacha20poly1305.KeySize
+	argonTime    uint32 = 1
+	argonMemory  uint32 = 64 * 1024
+	argonThreads uint8  = 4
+	argonKeyLen  uint32 = chacha20poly1305.KeySize
 	saltSize     = 16
 	passwordSize = 32 // Size of the random password
 )
+
+// PayloadData represents the structure of our CBOR payload
+type PayloadData struct {
+	EncryptedBytes []byte `cbor:"encrypted"`
+	Password       []byte `cbor:"password"`
+	Salt           []byte `cbor:"salt"`
+	Nonce          []byte `cbor:"nonce"`
+	ArgonParams    struct {
+		Time    uint32 `cbor:"time"`
+		Memory  uint32 `cbor:"memory"`
+		Threads uint8  `cbor:"threads"`
+	} `cbor:"argon_params"`
+}
 
 func main() {
 	if len(os.Args) < 2 {
@@ -36,20 +49,7 @@ func main() {
 	}
 
 	stubDir := filepath.Join("..", "stub")
-	encryptedFilePath := filepath.Join(stubDir, "encrypted_Input.bin")
-	configFilePath := filepath.Join(stubDir, "config.txt")
-
-	encryptedFile, err := os.Create(encryptedFilePath)
-	if err != nil {
-		log.Fatalf("Failed to create encrypted file: %v", err)
-	}
-	defer encryptedFile.Close()
-
-	configFile, err := os.Create(configFilePath)
-	if err != nil {
-		log.Fatalf("Failed to create config file: %v", err)
-	}
-	defer configFile.Close()
+	payloadPath := filepath.Join(stubDir, "payload.cbor")
 
 	// Generate a random password (instead of using the key directly)
 	password := make([]byte, passwordSize)
@@ -80,20 +80,29 @@ func main() {
 	// Encrypt the data with authentication
 	encryptedBytes := aead.Seal(nil, nonce, plaintextBytes, nil)
 
-	if _, err := encryptedFile.Write(encryptedBytes); err != nil {
-		log.Fatalf("Failed to write encrypted data: %v", err)
+	// Create the payload structure
+	payload := PayloadData{
+		EncryptedBytes: encryptedBytes,
+		Password:       password,
+		Salt:           salt,
+		Nonce:          nonce,
 	}
-
-	// Write the password, salt, and nonce to the config file
-	// We'll store them as hex for easier debugging
-	configData := fmt.Sprintf("%s\n%s\n%s\n", 
-		hex.EncodeToString(password),
-		hex.EncodeToString(salt),
-		hex.EncodeToString(nonce))
 	
-	if _, err := configFile.WriteString(configData); err != nil {
-		log.Fatalf("Failed to write config data: %v", err)
+	// Set the Argon2 parameters
+	payload.ArgonParams.Time = argonTime
+	payload.ArgonParams.Memory = argonMemory
+	payload.ArgonParams.Threads = uint8(argonThreads)
+	
+	// Marshal the payload to CBOR
+	cborData, err := cbor.Marshal(payload)
+	if err != nil {
+		log.Fatalf("Failed to marshal CBOR data: %v", err)
+	}
+	
+	// Write the CBOR data to file
+	if err := os.WriteFile(payloadPath, cborData, 0600); err != nil {
+		log.Fatalf("Failed to write CBOR payload: %v", err)
 	}
 
-	fmt.Printf("Encryption completed successfully!\nFiles saved to:\n- %s\n- %s\n", encryptedFilePath, configFilePath)
+	fmt.Printf("Encryption completed successfully!\nCBOR payload saved to:\n- %s\n", payloadPath)
 } 
