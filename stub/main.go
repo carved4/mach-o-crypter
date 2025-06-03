@@ -11,6 +11,7 @@ import (
 	"crypto/rand"
 	"crypto/subtle"
 	_ "embed"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"math/big"
@@ -73,8 +74,8 @@ var payloadData []byte
 
 // Default Argon2 parameters
 const (
-	argonTime    uint32 = 1
-	argonMemory  uint32 = 64 * 1024
+	argonTime    uint32 = 3
+	argonMemory  uint32 = 128 * 1024
 	argonThreads uint8  = 4
 	argonKeyLen  uint32 = chacha20poly1305.KeySize
 )
@@ -90,17 +91,13 @@ const (
 
 // PayloadData represents the structure of our CBOR payload
 type PayloadData struct {
-	EncryptedBytes []byte `cbor:"encrypted"`
-	Password       []byte `cbor:"password"`
-	Salt           []byte `cbor:"salt"`
-	Nonce          []byte `cbor:"nonce"`
-	Alg            string `cbor:"alg"`
-	Compressed     bool   `cbor:"compressed,omitempty"` // Flag to indicate if data is compressed
-	ArgonParams    struct {
-		Time    uint32 `cbor:"time"`
-		Memory  uint32 `cbor:"memory"`
-		Threads uint8  `cbor:"threads"`
-	} `cbor:"argon_params"`
+	EncryptedBytes []byte `cbor:"e"`
+	Password       []byte `cbor:"p"`
+	Salt           []byte `cbor:"s"`
+	Nonce          []byte `cbor:"n"`
+	Alg            string `cbor:"a"`
+	Compressed     bool   `cbor:"c,omitempty"` // Flag to indicate if data is compressed
+	ArgonParams    []byte `cbor:"ap"`
 }
 
 func main() {
@@ -155,19 +152,17 @@ func decryptFile() ([]byte, error) {
 	memoryParam := argonMemory
 	threadsParam := argonThreads
 
-	if payload.ArgonParams.Time > 0 {
-		timeParam = payload.ArgonParams.Time
-	}
-	if payload.ArgonParams.Memory > 0 {
-		memoryParam = payload.ArgonParams.Memory
-	}
-	if payload.ArgonParams.Threads > 0 {
-		threadsParam = payload.ArgonParams.Threads
+	if len(payload.ArgonParams) == 9 {
+		timeParam = binary.LittleEndian.Uint32(payload.ArgonParams[0:4])
+		memoryParam = binary.LittleEndian.Uint32(payload.ArgonParams[4:8])
+		threadsParam = payload.ArgonParams[8]
 	}
 
 	// Derive the key using Argon2id parameters
 	key := argon2.IDKey(payload.Password, payload.Salt,
 		timeParam, memoryParam, threadsParam, argonKeyLen)
+	// Immediately wipe the password
+	secureWipe(payload.Password)
 
 	var aead cipher.AEAD
 	switch strings.ToLower(payload.Alg) {
@@ -224,6 +219,8 @@ func decryptFile() ([]byte, error) {
 		// Replace the decrypted bytes with the decompressed data
 		decryptedBytes = decompressed.Bytes()
 	}
+
+	secureWipe(key)
 
 	return decryptedBytes, nil
 }

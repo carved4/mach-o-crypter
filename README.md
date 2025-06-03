@@ -36,7 +36,8 @@ This project contains two components:
 
 - **Encryption/Decryption**: ChaCha20-Poly1305, AES-GCM, or Twofish-GCM AEAD (Authenticated Encryption with Associated Data)
 - **Compression**: zlib compression to reduce payload size when beneficial
-- **Secure Key Derivation**: Argon2id, a memory-hard KDF resistant to brute-force attacks
+- **Secure Key Derivation**: Argon2id, a memory-hard KDF resistant to brute-force attacks (defaults: time=3, memory=128MB)
+- **Packed Argon2 Params**: key derivation settings stored as a compact byte slice inside the CBOR payload
 - **Protection Against Bit-Flip Attacks**: Authentication prevents tampering with encrypted data
 - **Architecture Detection**: Runtime detection of ARM64 vs x86_64 for universal binary support
 - **CBOR Payload Format**: Single-file packaging of all cryptographic material and encrypted binary
@@ -49,6 +50,7 @@ This project contains two components:
 - **Memory Security**:
   - Memory locking to prevent swap exposure
   - Constant-time memory wiping with runtime.KeepAlive protection
+  - Encryption tool wipes key material after payload creation
   - MADV_NOCORE to prevent memory dumps
   - MADV_FREE to reclaim memory pages immediately after use
 - **Stealthy Operation**:

@@ -6,13 +6,18 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
+	"crypto/subtle"
+	"encoding/binary"
 	"flag"
 	"fmt"
 	"io"
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"syscall"
+	"unsafe"
 
 	"github.com/fxamacker/cbor/v2"
 	"golang.org/x/crypto/argon2"
@@ -22,8 +27,8 @@ import (
 
 // Default Argon2 parameters
 const (
-	argonTime    uint32 = 1
-	argonMemory  uint32 = 64 * 1024
+	argonTime    uint32 = 3
+	argonMemory  uint32 = 128 * 1024
 	argonThreads uint8  = 4
 	argonKeyLen  uint32 = chacha20poly1305.KeySize
 	saltSize            = 16
@@ -32,17 +37,13 @@ const (
 
 // PayloadData represents the structure of our CBOR payload
 type PayloadData struct {
-	EncryptedBytes []byte `cbor:"encrypted"`
-	Password       []byte `cbor:"password"`
-	Salt           []byte `cbor:"salt"`
-	Nonce          []byte `cbor:"nonce"`
-	Alg            string `cbor:"alg"`
-	Compressed     bool   `cbor:"compressed,omitempty"` // Flag to indicate if data is compressed
-	ArgonParams    struct {
-		Time    uint32 `cbor:"time"`
-		Memory  uint32 `cbor:"memory"`
-		Threads uint8  `cbor:"threads"`
-	} `cbor:"argon_params"`
+	EncryptedBytes []byte `cbor:"e"`
+	Password       []byte `cbor:"p"`
+	Salt           []byte `cbor:"s"`
+	Nonce          []byte `cbor:"n"`
+	Alg            string `cbor:"a"`
+	Compressed     bool   `cbor:"c,omitempty"` // Flag to indicate if data is compressed
+	ArgonParams    []byte `cbor:"ap"`          // Packed argon2 params
 }
 
 func main() {
@@ -161,6 +162,10 @@ func main() {
 	// Encrypt the data with authentication
 	encryptedBytes := aead.Seal(nil, nonce, dataToEncrypt, nil)
 
+	// Wipe sensitive material
+	secureWipe(key)
+	secureWipe(password)
+
 	// Create the payload structure
 	payload := PayloadData{
 		EncryptedBytes: encryptedBytes,
@@ -171,10 +176,12 @@ func main() {
 		Compressed:     compressed,
 	}
 
-	// Set the Argon2 parameters
-	payload.ArgonParams.Time = argonTime
-	payload.ArgonParams.Memory = argonMemory
-	payload.ArgonParams.Threads = uint8(argonThreads)
+	// Pack Argon2 parameters into a byte slice for compact storage
+	paramBytes := make([]byte, 9)
+	binary.LittleEndian.PutUint32(paramBytes[0:4], argonTime)
+	binary.LittleEndian.PutUint32(paramBytes[4:8], argonMemory)
+	paramBytes[8] = argonThreads
+	payload.ArgonParams = paramBytes
 
 	// Create CBOR encoder with compression options
 	encOpts := cbor.EncOptions{
@@ -199,4 +206,22 @@ func main() {
 	}
 
 	fmt.Printf("Encryption completed successfully!\nCBOR payload saved to:\n- %s\n", payloadPath)
+}
+
+// secureWipe overwrites sensitive data using constant-time operations
+func secureWipe(data []byte) {
+	if len(data) == 0 {
+		return
+	}
+	dataPtr := unsafe.Pointer(&data[0])
+	zeros := make([]byte, len(data))
+	subtle.ConstantTimeCopy(1, data, zeros)
+	runtime.KeepAlive(data)
+	runtime.KeepAlive(dataPtr)
+	const MADV_FREE = 8
+	_, _, _ = syscall.Syscall(syscall.SYS_MADVISE,
+		uintptr(dataPtr),
+		uintptr(len(data)),
+		uintptr(MADV_FREE))
+	runtime.GC()
 }
