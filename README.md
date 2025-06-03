@@ -1,11 +1,11 @@
-A Go-based implementation of a crypter for Mach-O binaries on macOS with ChaCha20-Poly1305 authenticated encryption, zlib compression, CBOR payload packaging, and secure in-memory execution with anti-forensic features.
+A Go-based implementation of a crypter for Mach-O binaries on macOS supporting ChaCha20-Poly1305, AES-GCM, and Twofish-GCM authenticated encryption, with zlib compression, CBOR payload packaging, and secure in-memory execution with anti-forensic features.
 
 Feel free to open issues or DM with feedback or use cases!
 
 ## Overview
 This project contains two components:
 
-1. **crypt** - A tool to encrypt a Mach-O executable file using ChaCha20-Poly1305 authenticated encryption, and package it into a single CBOR payload:
+1. **crypt** - A tool to encrypt a Mach-O executable file using ChaCha20-Poly1305, AES-GCM, or Twofish-GCM authenticated encryption, and package it into a single CBOR payload:
     - Combines encrypted binary, key derivation parameters, and cryptographic material into a single file
     - Uses zlib compression to reduce payload size when beneficial
     - Uses CBOR (Concise Binary Object Representation) for compact, non-textual storage
@@ -34,7 +34,7 @@ This project contains two components:
 
 ## Features
 
-- **Encryption/Decryption**: ChaCha20-Poly1305 AEAD (Authenticated Encryption with Associated Data)
+- **Encryption/Decryption**: ChaCha20-Poly1305, AES-GCM, or Twofish-GCM AEAD (Authenticated Encryption with Associated Data)
 - **Compression**: zlib compression to reduce payload size when beneficial
 - **Secure Key Derivation**: Argon2id, a memory-hard KDF resistant to brute-force attacks
 - **Protection Against Bit-Flip Attacks**: Authentication prevents tampering with encrypted data
