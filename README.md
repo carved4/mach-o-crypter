@@ -1,5 +1,3 @@
-# Macho-Crypter - A Mach-O Binary Crypter for macOS
-
 A Go-based implementation of a crypter for Mach-O binaries on macOS with ChaCha20-Poly1305 authenticated encryption, zlib compression, CBOR payload packaging, and secure in-memory execution with anti-forensic features.
 
 Feel free to open issues or DM with feedback or use cases!
@@ -25,12 +23,11 @@ This project contains two components:
 
 ## How to Use
 1. Clone the repository
-2. `cd gocrypter`
-3. Put your target Mach-O executable in `gocrypter/crypt`
-4. In a shell, `cd` into `gocrypter/crypt`
-5. To encrypt your binary: `go run main.go your_binary` (replace with the name of your Mach-O binary)
-6. A single `payload.cbor` file will be created in the `gocrypter/stub` directory
-7. `cd` into `gocrypter/stub`
+2. `cd mach-o-crypter`
+3. Put your target Mach-O executable in `mach-o-crypter/crypt`
+4. In a shell, `cd` into `mach-o-crypter/crypt`
+5.  A single `payload.cbor` file will be created in the `mach-o-crypter/stub` directory
+7. `cd` into `mach-o-crypter/stub`
 8. Build the stub: `go build -v`
 9. Run the stub: `./stub`
 10. Done!
@@ -56,96 +53,3 @@ This project contains two components:
   - MADV_FREE to reclaim memory pages immediately after use
 - **Stealthy Operation**:
   - No logging to system.log
-  - Obfuscated path logging to prevent revealing actual file locations
-  - Randomized bundle ID prefix per build to avoid static signatures
-  - Blends with legitimate application caches
-  - Minimal filesystem footprint
-- **Embedded Resources**: The encrypted payload is embedded in the stub binary using Go's embed package
-
-## Security Improvements
-
-The project implements multiple layers of security enhancements:
-
-### Core Security Features
-
-1. **Authenticated Encryption**: ChaCha20-Poly1305 provides both confidentiality and integrity/authenticity
-2. **Secure Key Derivation**: Instead of storing encryption keys directly, we use Argon2id to derive keys
-3. **Memory-Hard Key Derivation**: Makes brute force attacks significantly more expensive
-
-### Advanced Memory Protection
-
-1. **Memory Locking (mlock)**:
-   - Prevents sensitive decrypted data from being swapped to disk
-   - Reduces the risk of sensitive data being recovered from swap files
-
-2. **Constant-Time Memory Wiping**:
-   - Uses `crypto/subtle.ConstantTimeCopy` for secure memory wiping
-   - Prevents compiler optimization from removing memory clearing operations
-   - Employs `runtime.KeepAlive` to ensure memory wipes aren't optimized away
-
-3. **Architecture-Aware Execution**:
-   - Runtime detection of CPU architecture (ARM64 vs x86_64)
-   - Uses `sysctlbyname("hw.optional.arm64")` for architecture detection
-   - Ensures compatibility with Apple Silicon and Intel processors
-
-### Filesystem Security
-
-1. **Improved Temporary File Location**:
-   - Uses `/private/var/folders/<uid>/T/` (user-specific temp directories) when available
-   - Falls back to `/tmp` only if user-specific directories are inaccessible
-   - Reduces visibility in common forensic scans
-
-2. **Anti-Forensic File Handling**:
-   - Implements file hole punching with `F_PUNCHHOLE` to complicate forensic recovery
-   - Overwrites file content with zeros before deletion
-   - Makes carving deleted files from disk significantly more difficult
-
-3. **Secure Execution Flow**:
-   - Random filenames with hidden attribute (dot prefix)
-   - Immediate unlinking after execution
-   - Proper permissions (0700)
-
-### Build Improvements
-
-1. **Platform-Specific Compilation**:
-   - Uses `//go:build darwin` tags to ensure code only builds on macOS
-   - Prevents accidental builds on unsupported platforms
-
-## Security Considerations
-
-This implementation includes numerous security enhancements but should still be used with caution in appropriate contexts.
-
-**Important**: Do not use this outside of a lab environment or an authorized red team engagement. I am not responsible for your actions.
-
-Additional security features implemented:
-- Memory locking (mlock) to prevent sensitive data from being swapped to disk
-- Constant-time memory wiping to prevent optimization from removing security operations
-- MADV_FREE to immediately reclaim memory pages after use
-- Anti-forensic file deletion with zero-overwrite and F_PUNCHHOLE before unlink
-- Stealthy logging with path obfuscation to avoid revealing file locations
-- Architecture detection for universal binary support
-- User cache directory usage with randomized bundle IDs to blend with legitimate applications
-- Proper file descriptor management with defer-close to prevent leaks
-- Adaptive compression that only applies when it reduces payload size
-
-Potential future improvements:
-- Anti-debugging mechanisms
-- VM detection
-- Additional obfuscation techniques
-- In-memory execution without touching disk
-## Platform Support
-
-This implementation is specifically designed for macOS and Mach-O binaries. It uses macOS-specific system calls and file handling.
-
-## Example Usage
-
-1. Create a simple Mach-O binary to test with
-2. Encrypt it using the crypt tool: `go run main.go your_binary`
-   - The tool will automatically compress the binary if it reduces size
-   - You'll see output indicating if compression was beneficial and the compression ratio
-3. Build and run the stub: `go build -v && ./stub`
-4. The binary will be executed securely with all environment variables preserved
-
-## License
-
-See the LICENSE file for details.
