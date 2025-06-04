@@ -1,4 +1,4 @@
-A Go-based implementation of a crypter for Mach-O binaries on macOS supporting ChaCha20-Poly1305, AES-GCM, and Twofish-GCM authenticated encryption, with zlib compression, CBOR payload packaging, and secure in-memory execution with anti-forensic features.
+A Go-based implementation of a crypter for Mach-O binaries on macOS supporting ChaCha20-Poly1305, AES-GCM, and Twofish-GCM authenticated encryption, with zlib compression, CBOR payload packaging, and secure pseudo in-memory execution with anti-forensic features.
 
 Feel free to open issues or DM with feedback or use cases!
 
